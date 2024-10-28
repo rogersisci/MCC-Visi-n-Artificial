@@ -1,0 +1,150 @@
+!pip install nvcc4jupyter
+
+!pip install opencv-python-headless
+
+!pip install pycuda
+
+import cv2
+import numpy as np
+import pycuda.driver as cuda
+import pycuda.autoinit
+from pycuda.compiler import SourceModule
+from google.colab.patches import cv2_imshow
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Cargar la imagen de tu drive
+image_path = "/content/drive/MyDrive/Proceso de Imagenes/mujerdesombrero.png"
+
+
+image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+
+
+if image is None:
+    print("Error: Unable to load image")
+else:
+    print("Image loaded successfully")
+
+
+h_img = image.flatten().astype(np.uint8)
+
+
+cuda_code = """
+__global__ void histogram_atomic(int *d_b, unsigned char *d_a, int size)
+{
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < size)
+    {
+        atomicAdd(&(d_b[d_a[tid]]), 1);
+    }
+}
+"""
+
+
+mod = SourceModule(cuda_code)
+
+
+histogram_atomic = mod.get_function("histogram_atomic")
+
+
+size = len(h_img)
+h_b = np.zeros(256, dtype=np.int32)
+
+
+d_img = cuda.mem_alloc(h_img.nbytes)
+d_b = cuda.mem_alloc(h_b.nbytes)
+
+
+cuda.memcpy_htod(d_img, h_img)
+cuda.memset_d32(d_b, 0, 256)
+
+
+block_size = 256
+grid_size = (size + block_size - 1) // block_size
+histogram_atomic(d_b, d_img, np.int32(size), block=(block_size, 1, 1), grid=(grid_size, 1))
+
+
+cuda.memcpy_dtoh(h_b, d_b)
+
+
+for i in range(len(h_b)):
+    print(f"bin {i} : count {h_b[i]}")
+
+
+
+constante = 150
+
+
+cuda_code_suma_constante = """
+__global__ void suma_constante(unsigned char *d_a, int size, unsigned char constante)
+{
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < size)
+    {
+        d_a[tid] = min(d_a[tid] + constante, 255); // Asegúrate de que el valor no supere 255
+    }
+}
+"""
+
+
+mod_suma_constante = SourceModule(cuda_code_suma_constante)
+
+
+suma_constante = mod_suma_constante.get_function("suma_constante")
+
+
+block_size = 256
+grid_size = (size + block_size - 1) // block_size
+
+
+suma_constante(d_img, np.int32(size), np.uint8(constante), block=(block_size, 1, 1), grid=(grid_size, 1))
+
+
+cuda.memcpy_dtoh(h_img, d_img)
+
+
+image_resultante = np.reshape(h_img, image.shape)
+
+
+cv2_imshow(image_resultante)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
+
+# RESTA
+
+constante_resta = 50
+
+cuda_code_resta_constante = """
+__global__ void resta_constante(unsigned char *d_a, int size, unsigned char constante)
+{
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < size)
+    {
+        d_a[tid] = max(d_a[tid] - constante, 0); // Asegúrate de que el valor no sea negativo
+    }
+}
+"""
+
+mod_resta_constante = SourceModule(cuda_code_resta_constante)
+
+
+resta_constante = mod_resta_constante.get_function("resta_constante")
+
+
+block_size = 256
+grid_size = (size + block_size - 1) // block_size
+
+
+resta_constante(d_img, np.int32(size), np.uint8(constante_resta), block=(block_size, 1, 1), grid=(grid_size, 1))
+
+
+cuda.memcpy_dtoh(h_img, d_img)
+
+
+image_resultante_resta = np.reshape(h_img, image.shape)
+
+
+cv2_imshow(image_resultante_resta)
+cv2.waitKey(0)
+cv2.destroyAllWindows()

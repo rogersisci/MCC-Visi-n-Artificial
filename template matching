@@ -1,0 +1,63 @@
+import cv2
+import numpy as np
+import pycuda.driver as cuda
+import pycuda.autoinit
+from pycuda.compiler import SourceModule
+from google.colab.patches import cv2_imshow
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Cargar la imagen completa (A)
+image_A_path = "/content/drive/MyDrive/visión artificial/NaipeEspada.png"
+image_A = cv2.imread(image_A_path, cv2.IMREAD_GRAYSCALE)
+
+# Cargar el template (P)
+pattern_path = "/content/drive/MyDrive/visión artificial/recorteespada.png"
+pattern = cv2.imread(pattern_path, cv2.IMREAD_GRAYSCALE)
+
+
+cuda_code_convolution = """
+__global__ void convolution(unsigned char *input, unsigned char *output, int width, int height, unsigned char *mask, int mask_width, int mask_height)
+{
+    int x = threadIdx.x + blockIdx.x * blockDim.x;
+    int y = threadIdx.y + blockIdx.y * blockDim.y;
+
+    if (x < width && y < height)
+    {
+        float sum = 0.0;
+        for (int i = 0; i < mask_height; i++)
+        {
+            for (int j = 0; j < mask_width; j++)
+            {
+                int idx_image = (y + i) * width + (x + j);
+                int idx_mask = i * mask_width + j;
+                sum += mask[idx_mask] * input[idx_image];
+            }
+        }
+        output[y * width + x] = (unsigned char)sum;
+    }
+}
+"""
+
+
+mod_convolution = SourceModule(cuda_code_convolution)
+convolution = mod_convolution.get_function("convolution")
+
+
+block_size = (16, 16)
+grid_size = ((image_A.shape[1] + block_size[0] - 1) // block_size[0], (image_A.shape[0] + block_size[1] - 1) // block_size[1])
+
+
+d_image_A = cuda.mem_alloc(image_A.nbytes)
+d_output = cuda.mem_alloc(image_A.nbytes)
+d_pattern = cuda.mem_alloc(pattern.nbytes)
+
+cuda.memcpy_htod(d_image_A, image_A)
+cuda.memcpy_htod(d_pattern, pattern)
+
+convolution(d_image_A, d_output, np.int32(image_A.shape[1]), np.int32(image_A.shape[0]), d_pattern, np.int32(pattern.shape[1]), np.int32(pattern.shape[0]), block=(block_size[0], block_size[1], 1), grid=grid_size)
+
+image_matched = np.empty_like(image_A)
+cuda.memcpy_dtoh(image_matched, d_output)
+
+cv2_imshow(image_matched)

@@ -1,0 +1,137 @@
+import cv2
+import numpy as np
+import pycuda.driver as cuda
+import pycuda.autoinit
+from pycuda.compiler import SourceModule
+from google.colab.patches import cv2_imshow
+
+from google.colab import drive
+drive.mount('/content/drive')
+
+# Cargar la imagen de tu drive
+image_path = "/content/drive/MyDrive/Proceso de Imagenes/imagen-grises.png"
+
+
+image = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+
+
+if image is None:
+    print("Error: Unable to load image")
+else:
+    print("Image loaded successfully")
+
+
+h_img = image.flatten().astype(np.uint8)
+
+
+cuda_code = """
+__global__ void histogram_atomic(int *d_b, unsigned char *d_a, int size)
+{
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < size)
+    {
+        atomicAdd(&(d_b[d_a[tid]]), 1);
+    }
+}
+"""
+
+
+mod = SourceModule(cuda_code)
+
+
+histogram_atomic = mod.get_function("histogram_atomic")
+
+
+size = len(h_img)
+h_b = np.zeros(256, dtype=np.int32)
+
+
+d_img = cuda.mem_alloc(h_img.nbytes)
+d_b = cuda.mem_alloc(h_b.nbytes)
+
+
+cuda.memcpy_htod(d_img, h_img)
+cuda.memset_d32(d_b, 0, 256)
+
+
+block_size = 256
+grid_size = (size + block_size - 1) // block_size
+histogram_atomic(d_b, d_img, np.int32(size), block=(block_size, 1, 1), grid=(grid_size, 1))
+
+
+cuda.memcpy_dtoh(h_b, d_b)
+
+
+for i in range(len(h_b)):
+    print(f"bin {i} : count {h_b[i]}")
+
+cuda_code_ecualizar = """
+__global__ void ecualizar_imagen(unsigned char *d_a, int size, unsigned char *f)
+{
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < size)
+    {
+        d_a[tid] = f[d_a[tid]];
+    }
+}
+"""
+
+
+mod_ecualizar = SourceModule(cuda_code_ecualizar)
+
+
+ecualizar_imagen = mod_ecualizar.get_function("ecualizar_imagen")
+
+
+total_pixels = size  
+f = np.zeros(256, dtype=np.uint8)
+acumulado = h_b[0]
+for i in range(1, 256):
+    f[i] = acumulado * 255 // total_pixels
+    acumulado += h_b[i]
+
+
+ecualizar_imagen(d_img, np.int32(size), cuda.In(f), block=(block_size, 1, 1), grid=(grid_size, 1))
+
+
+cuda.memcpy_dtoh(h_img, d_img)
+
+
+image_ecualizada = np.reshape(h_img, image.shape)
+
+
+cv2_imshow(image_ecualizada)
+
+
+cuda_code_histograma_ecualizado = """
+__global__ void histograma_ecualizado(int *d_b, unsigned char *d_a, int size)
+{
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    if (tid < size)
+    {
+        atomicAdd(&(d_b[d_a[tid]]), 1);
+    }
+}
+"""
+
+
+mod_histograma_ecualizado = SourceModule(cuda_code_histograma_ecualizado)
+
+
+histograma_ecualizado = mod_histograma_ecualizado.get_function("histograma_ecualizado")
+
+
+h_b_ecualizado = np.zeros(256, dtype=np.int32)
+d_b_ecualizado = cuda.mem_alloc(h_b_ecualizado.nbytes)
+cuda.memset_d32(d_b_ecualizado, 0, 256)
+
+
+histograma_ecualizado(d_b_ecualizado, d_img, np.int32(size), block=(block_size, 1, 1), grid=(grid_size, 1))
+
+
+cuda.memcpy_dtoh(h_b_ecualizado, d_b_ecualizado)
+
+
+print("Histograma de la imagen ecualizada:")
+for i in range(len(h_b_ecualizado)):
+    print(f"bin {i} : count {h_b_ecualizado[i]}")

@@ -1,0 +1,94 @@
+
+#include <stdio.h>
+#include <cuda_runtime.h>
+#include <sys/time.h>
+#include <iostream>
+using namespace std;
+
+#define SIZE 1000000
+#define SECOND_TO_MRCROSECOND (1000000)
+#define NUM_BIN 256
+
+__global__ void histogram_atomic(int *d_b, int *d_a)
+{
+    int tid = threadIdx.x + blockDim.x * blockIdx.x;
+    int item = d_a[tid];
+    if (tid < SIZE)
+    {
+        atomicAdd(&(d_b[item]), 1);
+    }
+}
+
+
+int main()
+{
+    int h_a[SIZE];
+    for (int i = 0; i < SIZE; ++i)
+    {
+        h_a[i] = i % NUM_BIN;
+    }
+   const int valueadd = 10;
+    for (int i = 0; i < 20; ++i)
+    {
+        h_a[i] += valueadd;
+        if (h_a[i] > 255)
+        {
+            h_a[i] = 255;
+        }
+    }
+
+    int h_b[NUM_BIN];
+    for (int i = 0; i < NUM_BIN; ++i)
+    {
+        h_b[i] = 0;
+    }
+    for (int i = 0; i < 20; ++i)
+    {
+        h_b[i] += valueadd;
+        if (h_b[i] > 255)
+        {
+            h_b[i] = 255;
+        }
+    }
+
+
+    // Declare GPU memory pointers
+    int *d_a;
+    int *d_b;
+
+    cudaEvent_t e_start, e_stop;
+    cudaEventCreate(&e_start);
+    cudaEventCreate(&e_stop);
+    cudaEventRecord(e_start, 0);
+
+    // Allocate GPU memory
+    cudaMalloc((void **)&d_a, SIZE * sizeof(int));
+    cudaMalloc((void **)&d_b, NUM_BIN * sizeof(int));
+
+    // Transfer the arrays to the GPU
+    cudaMemcpy(d_a, h_a, SIZE * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_b, h_b, NUM_BIN * sizeof(int), cudaMemcpyHostToDevice);
+
+    // Launch the kernel
+    histogram_atomic<<<((SIZE + NUM_BIN - 1) / NUM_BIN), NUM_BIN>>>(d_b, d_a);
+
+    // Copy back the sum from GPU
+    cudaMemcpy(h_b, d_b, NUM_BIN * sizeof(int), cudaMemcpyDeviceToHost);
+
+    cudaEventRecord(e_stop, 0);
+    cudaEventSynchronize(e_stop);
+    float elapsedTime;
+    cudaEventElapsedTime(&elapsedTime, e_start, e_stop);
+    printf("Time to compute histogram of %d numbers: %3.1f ms\n\n\n", SIZE, elapsedTime);
+
+    for (int i = 0; i < NUM_BIN; i++)
+    {
+        printf("bin %d : count %d\n", i, h_b[i]);
+    }
+
+    // Free GPU memory allocation
+    cudaFree(d_a);
+    cudaFree(d_b);
+
+    return 0;
+}
